@@ -230,15 +230,38 @@ class AnalysisService:
         self,
         code: Optional[str] = None,
         query_id: Optional[str] = None,
+        success: Optional[bool] = None,
         days: int = 30,
-        limit: int = 50
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
     ) -> List[Dict[str, Any]]:
         """
-        获取分析历史记录
+        获取分析历史记录（支持分页和排序）
         """
         db = get_db()
-        records = db.get_analysis_history(code=code, query_id=query_id, days=days, limit=limit)
+        records = db.get_analysis_history_paginated(
+            code=code, 
+            query_id=query_id, 
+            success=success,
+            days=days, 
+            limit=limit, 
+            offset=offset,
+            sort_by=sort_by,
+            sort_order=sort_order
+        )
         return [r.to_dict() for r in records]
+
+    def get_history_count(self, code: Optional[str] = None, success: Optional[bool] = None, days: int = 30) -> int:
+        """获取历史记录总数"""
+        db = get_db()
+        return db.get_analysis_history_count(code=code, success=success, days=days)
+
+    def get_latest_successful_analysis(self, codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """批量获取一组代码的最新成功分析记录"""
+        db = get_db()
+        return db.get_latest_successful_analysis_batch(codes)
     
     def _run_analysis(
         self, 

@@ -792,8 +792,12 @@ class SearchService:
             # 如果提供了关键词，直接使用关键词作为查询
             query = " ".join(focus_keywords)
         else:
-            # 默认主查询：股票名称 + 核心关键词
-            query = f"{stock_name} {stock_code} 股票 最新消息"
+            # 智能判断是否为基金
+            is_fund = stock_code.startswith(('00', '01', '11', '16', '51', '15'))
+            if is_fund:
+                query = f"{stock_name} {stock_code} 基金 净值估值 经理观点 行业展望"
+            else:
+                query = f"{stock_name} {stock_code} 股票 最新消息"
 
         logger.info(f"搜索股票新闻: {stock_name}({stock_code}), query='{query}', 时间范围: 近{search_days}天")
         

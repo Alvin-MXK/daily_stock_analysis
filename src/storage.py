@@ -29,6 +29,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     Integer,
+    Boolean,
     Index,
     UniqueConstraint,
     Text,
@@ -194,6 +195,7 @@ class AnalysisHistory(Base):
     report_type = Column(String(16), index=True)
 
     # 核心结论
+    success = Column(Boolean, default=True, index=True)  # 是否分析成功
     sentiment_score = Column(Integer)
     operation_advice = Column(String(20))
     trend_prediction = Column(String(50))
@@ -224,6 +226,7 @@ class AnalysisHistory(Base):
             'code': self.code,
             'name': self.name,
             'report_type': self.report_type,
+            'success': self.success,
             'sentiment_score': self.sentiment_score,
             'operation_advice': self.operation_advice,
             'trend_prediction': self.trend_prediction,
@@ -552,6 +555,7 @@ class DatabaseManager:
             code=result.code,
             name=result.name,
             report_type=report_type,
+            success=getattr(result, 'success', True),
             sentiment_score=result.sentiment_score,
             operation_advice=result.operation_advice,
             trend_prediction=result.trend_prediction,
@@ -575,6 +579,80 @@ class DatabaseManager:
                 session.rollback()
                 logger.error(f"保存分析历史失败: {e}")
                 return 0
+
+    def get_analysis_history_paginated(
+        self,
+        code: Optional[str] = None,
+        query_id: Optional[str] = None,
+        success: Optional[bool] = None,
+        days: int = 30,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: str = "created_at",
+        sort_order: str = "desc"
+    ) -> List[AnalysisHistory]:
+        """
+        分页查询分析历史记录
+        """
+        cutoff_date = datetime.now() - timedelta(days=days)
+
+        with self.get_session() as session:
+            conditions = [AnalysisHistory.created_at >= cutoff_date]
+            if code:
+                conditions.append(AnalysisHistory.code == code)
+            if query_id:
+                conditions.append(AnalysisHistory.query_id == query_id)
+            if success is not None:
+                conditions.append(AnalysisHistory.success == success)
+
+            query = select(AnalysisHistory).where(and_(*conditions))
+            
+            # 排序
+            sort_attr = getattr(AnalysisHistory, sort_by, AnalysisHistory.created_at)
+            if sort_order.lower() == "desc":
+                query = query.order_by(desc(sort_attr))
+            else:
+                query = query.order_by(sort_attr)
+                
+            results = session.execute(
+                query.offset(offset).limit(limit)
+            ).scalars().all()
+
+            return list(results)
+
+    def get_analysis_history_count(self, code: Optional[str] = None, success: Optional[bool] = None, days: int = 30) -> int:
+        """获取历史记录总数"""
+        from sqlalchemy import func
+        cutoff_date = datetime.now() - timedelta(days=days)
+        with self.get_session() as session:
+            conditions = [AnalysisHistory.created_at >= cutoff_date]
+            if code:
+                conditions.append(AnalysisHistory.code == code)
+            if success is not None:
+                conditions.append(AnalysisHistory.success == success)
+            
+            count = session.execute(
+                select(func.count()).select_from(AnalysisHistory).where(and_(*conditions))
+            ).scalar()
+            return count or 0
+
+    def get_latest_successful_analysis_batch(self, codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """批量获取最新成功分析记录"""
+        result = {}
+        with self.get_session() as session:
+            for code in codes:
+                record = session.execute(
+                    select(AnalysisHistory)
+                    .where(and_(
+                        AnalysisHistory.code == code,
+                        AnalysisHistory.success == True
+                    ))
+                    .order_by(desc(AnalysisHistory.created_at))
+                    .limit(1)
+                ).scalar_one_or_none()
+                if record:
+                    result[code] = record.to_dict()
+        return result
 
     def get_analysis_history(
         self,

@@ -92,9 +92,12 @@ class Scheduler:
         """
         self._task_callback = task
         
-        # 设置每日定时任务
-        self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
-        logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
+        if self.schedule_time and self.schedule_time.strip():
+            # 设置每日定时任务
+            self.schedule.every().day.at(self.schedule_time).do(self._safe_run_task)
+            logger.info(f"已设置每日定时任务，执行时间: {self.schedule_time}")
+        else:
+            logger.info("未设置定时触发时间，仅支持手动触发模式")
         
         if run_immediately:
             logger.info("立即执行一次任务...")

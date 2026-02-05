@@ -112,22 +112,16 @@ _realtime_cache: Dict[str, Any] = {
 }
 
 
-def _is_etf_code(stock_code: str) -> bool:
+def _is_fund_code(stock_code: str) -> bool:
     """
-    判断代码是否为 ETF 基金
+    判断代码是否为中国公募基金（包括 ETF 和 场外基金）
     
-    ETF 代码规则：
-    - 上交所 ETF: 51xxxx, 52xxxx, 56xxxx, 58xxxx
-    - 深交所 ETF: 15xxxx, 16xxxx, 18xxxx
-    
-    Args:
-        stock_code: 股票/基金代码
-        
-    Returns:
-        True 表示是 ETF 代码，False 表示是普通股票代码
+    基金代码规则：
+    - 场外基金：00xxxx, 01xxxx, 11xxxx, 16xxxx, 26xxxx, 27xxxx 等
+    - 场内 ETF: 15xxxx, 51xxxx, 56xxxx, 58xxxx 等
     """
-    etf_prefixes = ('51', '52', '56', '58', '15', '16', '18')
-    return stock_code.startswith(etf_prefixes) and len(stock_code) == 6
+    fund_prefixes = ('00', '01', '11', '15', '16', '18', '20', '26', '27', '50', '51', '52', '56', '58')
+    return stock_code.startswith(fund_prefixes) and len(stock_code) == 6
 
 
 def _is_us_code(stock_code: str) -> bool:
@@ -243,7 +237,7 @@ class EfinanceFetcher(BaseFetcher):
             raise DataFetchError(f"EfinanceFetcher 不支持美股 {stock_code}，请使用 AkshareFetcher 或 YfinanceFetcher")
         
         # 根据代码类型选择不同的获取方法
-        if _is_etf_code(stock_code):
+        if _is_fund_code(stock_code):
             return self._fetch_etf_data(stock_code, start_date, end_date)
         else:
             return self._fetch_stock_data(stock_code, start_date, end_date)
@@ -441,106 +435,115 @@ class EfinanceFetcher(BaseFetcher):
         
         return df
     
-    def get_realtime_quote(self, stock_code: str) -> Optional[EfinanceRealtimeQuote]:
+    def get_realtime_quote(self, stock_code: str) -> Optional[UnifiedRealtimeQuote]:
         """
         获取实时行情数据
         
-        数据来源：ef.stock.get_realtime_quotes()
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            UnifiedRealtimeQuote 对象，获取失败返回 None
+        针对场外基金优化：
+        1. 优先判断是否为场外基金
+        2. 场外基金使用 ef.fund.get_realtime_quotes() 获取估算净值
+        3. 股票/ETF 使用 ef.stock.get_realtime_quotes()
         """
         import efinance as ef
         circuit_breaker = get_realtime_circuit_breaker()
         source_key = "efinance"
         
-        # 检查熔断器状态
         if not circuit_breaker.is_available(source_key):
-            logger.warning(f"[熔断] 数据源 {source_key} 处于熔断状态，跳过")
             return None
         
         try:
-            # 检查缓存
             current_time = time.time()
-            if (_realtime_cache['data'] is not None and 
-                current_time - _realtime_cache['timestamp'] < _realtime_cache['ttl']):
-                df = _realtime_cache['data']
-                cache_age = int(current_time - _realtime_cache['timestamp'])
-                logger.debug(f"[缓存命中] 实时行情(efinance) - 缓存年龄 {cache_age}s/{_realtime_cache['ttl']}s")
+            is_fund = _is_fund_code(stock_code)
+            cache_key = 'fund_data' if is_fund else 'stock_data'
+            
+            # 使用独立的基金/股票缓存
+            if not hasattr(self, '_cache_store'):
+                self._cache_store = {}
+            
+            cache = self._cache_store.get(cache_key)
+            if (cache and cache['data'] is not None and 
+                current_time - cache['timestamp'] < 600):
+                df = cache['data']
             else:
-                # 触发全量刷新
-                logger.info(f"[缓存未命中] 触发全量刷新 实时行情(efinance)")
-                # 防封禁策略
                 self._set_random_user_agent()
                 self._enforce_rate_limit()
                 
-                logger.info(f"[API调用] ef.stock.get_realtime_quotes() 获取实时行情...")
-                import time as _time
-                api_start = _time.time()
+                if is_fund:
+                    logger.info(f"[API调用] ef.fund.get_realtime_increase_rate() 获取场外基金估值...")
+                    # 基金接口需要传入代码列表
+                    df = ef.fund.get_realtime_increase_rate(stock_code)
+                else:
+                    logger.info(f"[API调用] ef.stock.get_realtime_quotes() 获取股票/ETF行情...")
+                    df = ef.stock.get_realtime_quotes()
                 
-                # efinance 的实时行情 API
-                df = ef.stock.get_realtime_quotes()
-                
-                api_elapsed = _time.time() - api_start
-                logger.info(f"[API返回] ef.stock.get_realtime_quotes 成功: 返回 {len(df)} 只股票, 耗时 {api_elapsed:.2f}s")
+                self._cache_store[cache_key] = {
+                    'data': df,
+                    'timestamp': current_time
+                }
                 circuit_breaker.record_success(source_key)
-                
-                # 更新缓存
-                _realtime_cache['data'] = df
-                _realtime_cache['timestamp'] = current_time
-                logger.info(f"[缓存更新] 实时行情(efinance) 缓存已刷新，TTL={_realtime_cache['ttl']}s")
             
-            # 查找指定股票
-            # efinance 返回的列名可能是 '股票代码' 或 'code'
-            code_col = '股票代码' if '股票代码' in df.columns else 'code'
+            # 查找代码
+            code_col = '基金代码' if is_fund else ('股票代码' if '股票代码' in df.columns else 'code')
             row = df[df[code_col] == stock_code]
             if row.empty:
-                logger.warning(f"[API返回] 未找到股票 {stock_code} 的实时行情")
                 return None
             
             row = row.iloc[0]
             
-            # 使用 realtime_types.py 中的统一转换函数
-            # 获取列名（可能是中文或英文）
-            name_col = '股票名称' if '股票名称' in df.columns else 'name'
-            price_col = '最新价' if '最新价' in df.columns else 'price'
-            pct_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
-            chg_col = '涨跌额' if '涨跌额' in df.columns else 'change'
-            vol_col = '成交量' if '成交量' in df.columns else 'volume'
-            amt_col = '成交额' if '成交额' in df.columns else 'amount'
-            turn_col = '换手率' if '换手率' in df.columns else 'turnover_rate'
-            amp_col = '振幅' if '振幅' in df.columns else 'amplitude'
-            high_col = '最高' if '最高' in df.columns else 'high'
-            low_col = '最低' if '最低' in df.columns else 'low'
-            open_col = '开盘' if '开盘' in df.columns else 'open'
-            # efinance 也返回量比、市盈率、市值等字段
-            vol_ratio_col = '量比' if '量比' in df.columns else 'volume_ratio'
-            pe_col = '市盈率' if '市盈率' in df.columns else 'pe_ratio'
-            total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
-            circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
-            
-            quote = UnifiedRealtimeQuote(
-                code=stock_code,
-                name=str(row.get(name_col, '')),
-                source=RealtimeSource.EFINANCE,
-                price=safe_float(row.get(price_col)),
-                change_pct=safe_float(row.get(pct_col)),
-                change_amount=safe_float(row.get(chg_col)),
-                volume=safe_int(row.get(vol_col)),
-                amount=safe_float(row.get(amt_col)),
-                turnover_rate=safe_float(row.get(turn_col)),
-                amplitude=safe_float(row.get(amp_col)),
-                high=safe_float(row.get(high_col)),
-                low=safe_float(row.get(low_col)),
-                open_price=safe_float(row.get(open_col)),
-                volume_ratio=safe_float(row.get(vol_ratio_col)),  # 量比
-                pe_ratio=safe_float(row.get(pe_col)),  # 市盈率
-                total_mv=safe_float(row.get(total_mv_col)),  # 总市值
-                circ_mv=safe_float(row.get(circ_mv_col)),  # 流通市值
-            )
+            if is_fund:
+                # 场外基金字段映射
+                quote = UnifiedRealtimeQuote(
+                    code=stock_code,
+                    name=str(row.get('基金名称', '')),
+                    source=RealtimeSource.EFINANCE,
+                    price=safe_float(row.get('最新净值')), # 场外基金以净值为准
+                    change_pct=safe_float(row.get('估算涨跌幅') or 0.0),
+                    high=safe_float(row.get('最新净值')),
+                    low=safe_float(row.get('最新净值')),
+                    open_price=safe_float(row.get('最新净值')),
+                    # 场外基金特有：估算数据
+                    volume_ratio=0.0, 
+                    pe_ratio=0.0,
+                    total_mv=0.0,
+                    circ_mv=0.0
+                )
+            else:
+                # 股票/ETF 字段映射
+                name_col = '股票名称' if '股票名称' in df.columns else 'name'
+                price_col = '最新价' if '最新价' in df.columns else 'price'
+                pct_col = '涨跌幅' if '涨跌幅' in df.columns else 'pct_chg'
+                chg_col = '涨跌额' if '涨跌额' in df.columns else 'change'
+                vol_col = '成交量' if '成交量' in df.columns else 'volume'
+                amt_col = '成交额' if '成交额' in df.columns else 'amount'
+                turn_col = '换手率' if '换手率' in df.columns else 'turnover_rate'
+                amp_col = '振幅' if '振幅' in df.columns else 'amplitude'
+                high_col = '最高' if '最高' in df.columns else 'high'
+                low_col = '最低' if '最低' in df.columns else 'low'
+                open_col = '开盘' if '开盘' in df.columns else 'open'
+                vol_ratio_col = '量比' if '量比' in df.columns else 'volume_ratio'
+                pe_col = '市盈率' if '市盈率' in df.columns else 'pe_ratio'
+                total_mv_col = '总市值' if '总市值' in df.columns else 'total_mv'
+                circ_mv_col = '流通市值' if '流通市值' in df.columns else 'circ_mv'
+                
+                quote = UnifiedRealtimeQuote(
+                    code=stock_code,
+                    name=str(row.get(name_col, '')),
+                    source=RealtimeSource.EFINANCE,
+                    price=safe_float(row.get(price_col)),
+                    change_pct=safe_float(row.get(pct_col)),
+                    change_amount=safe_float(row.get(chg_col)),
+                    volume=safe_int(row.get(vol_col)),
+                    amount=safe_float(row.get(amt_col)),
+                    turnover_rate=safe_float(row.get(turn_col)),
+                    amplitude=safe_float(row.get(amp_col)),
+                    high=safe_float(row.get(high_col)),
+                    low=safe_float(row.get(low_col)),
+                    open_price=safe_float(row.get(open_col)),
+                    volume_ratio=safe_float(row.get(vol_ratio_col)),
+                    pe_ratio=safe_float(row.get(pe_col)),
+                    total_mv=safe_float(row.get(total_mv_col)),
+                    circ_mv=safe_float(row.get(circ_mv_col)),
+                )
             
             logger.info(f"[实时行情-efinance] {stock_code} {quote.name}: 价格={quote.price}, 涨跌={quote.change_pct}%, "
                        f"量比={quote.volume_ratio}, 换手率={quote.turnover_rate}%")

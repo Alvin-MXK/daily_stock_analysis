@@ -21,7 +21,7 @@ from src.config import get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.realtime_types import ChipDistribution
-from src.analyzer import GeminiAnalyzer, AnalysisResult, STOCK_NAME_MAP
+from src.analyzer import GeminiAnalyzer, AnalysisResult, ASSET_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.search_service import SearchService
 from src.enums import ReportType
@@ -164,16 +164,17 @@ class StockAnalysisPipeline:
             AnalysisResult 或 None（如果分析失败）
         """
         try:
-            # 获取股票名称（优先从实时行情获取真实名称）
-            stock_name = STOCK_NAME_MAP.get(code, '')
+            # 获取资产名称（手动配置具有最高优先级）
+            manual_name = ASSET_NAME_MAP.get(code)
+            stock_name = manual_name or ''
             
             # Step 1: 获取实时行情（量比、换手率等）- 使用统一入口，自动故障切换
             realtime_quote = None
             try:
                 realtime_quote = self.fetcher_manager.get_realtime_quote(code)
                 if realtime_quote:
-                    # 使用实时行情返回的真实股票名称
-                    if realtime_quote.name:
+                    # 仅在没有手动配置名称时，才使用实时行情返回的名称
+                    if not manual_name and realtime_quote.name:
                         stock_name = realtime_quote.name
                     # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
                     volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
@@ -188,7 +189,8 @@ class StockAnalysisPipeline:
             
             # 如果还是没有名称，使用代码作为名称
             if not stock_name:
-                stock_name = f'股票{code}'
+                prefix = '基金' if code.startswith(('00', '01', '11', '15', '16', '18', '50', '51')) else '资产'
+                stock_name = f'{prefix}{code}'
             
             # Step 2: 获取筹码分布 - 使用统一入口，带熔断保护
             chip_data = None

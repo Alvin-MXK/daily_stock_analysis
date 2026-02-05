@@ -30,9 +30,35 @@ from src.config import get_config
 logger = logging.getLogger(__name__)
 
 
-# 股票名称映射（常见股票）
-STOCK_NAME_MAP = {
-    # === A股 ===
+# 资产名称映射（常见股票与基金）
+ASSET_NAME_MAP = {
+    # === 场外基金 (用户 STOCK_LIST 中的基金) ===
+    "012708": "东方红中证红利低波动指数A",
+    "002611": "博时黄金ETF联接C",
+    "004432": "南方有色金属ETF联接A",
+    "261101": "景顺长城稳定收益债券C",
+    "020712": "华安三菱日联日经225ETF发起式联接(QDII)A",
+    "017730": "嘉实全球产业升级股票发起式(QDII)A",
+    "110017": "易方达增强回报债券A",
+    "007280": "摩根日本精选股票(QDII)A",
+    "021528": "财通成长优选混合C",
+    "202101": "南方宝元债券A",
+    "019305": "摩根标普500指数(QDII)人民币C",
+    "006479": "广发纳斯达克100ETF联接人民币(QDII)C",
+    "016453": "南方纳斯达克100指数发起(QDII)C",
+    "270042": "广发纳斯达克100ETF联接人民币(QDII)A",
+    "019118": "景顺长城纳斯达克科技ETF联接(QDII)E人民币",
+    "017093": "景顺长城纳斯达克科技ETF联接(QDII)C人民币",
+    "017091": "景顺长城纳斯达克科技ETF联接(QDII)A人民币",
+    "012868": "易方达标普信息科技指数(QDII-LOF)C(人民币)",
+    "007466": "华泰柏瑞中证红利低波ETF联接A",
+    "161128": "易方达标普信息科技指数(QDII-LOF)A(人民币)",
+    "110011": "易方达优质精选混合(QDII)",
+    "012365": "广发中证光伏产业指数C",
+    "025209": "永赢先锋半导体智选混合发起C",
+    "019671": "广发港股创新药ETF联接(QDII)C",
+
+    # === 常见 A股 ===
     '600519': '贵州茅台',
     '000001': '平安银行',
     '300750': '宁德时代',
@@ -94,37 +120,27 @@ def get_stock_name_multi_source(
     data_manager = None
 ) -> str:
     """
-    多来源获取股票中文名称
+    多来源获取资产（股票/基金）中文名称
     
     获取策略（按优先级）：
     1. 从传入的 context 中获取（realtime 数据）
-    2. 从静态映射表 STOCK_NAME_MAP 获取
+    2. 从静态映射表 ASSET_NAME_MAP 获取
     3. 从 DataFetcherManager 获取（各数据源）
-    4. 返回默认名称（股票+代码）
-    
-    Args:
-        stock_code: 股票代码
-        context: 分析上下文（可选）
-        data_manager: DataFetcherManager 实例（可选）
-        
-    Returns:
-        股票中文名称
+    4. 返回默认名称（资产+代码）
     """
     # 1. 从上下文获取（实时行情数据）
     if context:
-        # 优先从 stock_name 字段获取
         if context.get('stock_name'):
             name = context['stock_name']
-            if name and not name.startswith('股票'):
+            if name and not (name.startswith('股票') or name.startswith('基金')):
                 return name
         
-        # 其次从 realtime 数据获取
         if 'realtime' in context and context['realtime'].get('name'):
             return context['realtime']['name']
     
     # 2. 从静态映射表获取
-    if stock_code in STOCK_NAME_MAP:
-        return STOCK_NAME_MAP[stock_code]
+    if stock_code in ASSET_NAME_MAP:
+        return ASSET_NAME_MAP[stock_code]
     
     # 3. 从数据源获取
     if data_manager is None:
@@ -139,13 +155,14 @@ def get_stock_name_multi_source(
             name = data_manager.get_stock_name(stock_code)
             if name:
                 # 更新缓存
-                STOCK_NAME_MAP[stock_code] = name
+                ASSET_NAME_MAP[stock_code] = name
                 return name
         except Exception as e:
-            logger.debug(f"从数据源获取股票名称失败: {e}")
+            logger.debug(f"从数据源获取名称失败: {e}")
     
     # 4. 返回默认名称
-    return f'股票{stock_code}'
+    prefix = '基金' if stock_code.startswith(('00', '01', '11', '15', '16', '18', '50', '51')) else '资产'
+    return f'{prefix}{stock_code}'
 
 
 @dataclass
@@ -309,39 +326,24 @@ class GeminiAnalyzer:
     # 核心模块：核心结论 + 数据透视 + 舆情情报 + 作战计划
     # ========================================
     
-    SYSTEM_PROMPT = """你是一位专注于趋势交易的 A 股投资分析师，负责生成专业的【决策仪表盘】分析报告。
+    SYSTEM_PROMPT = """你是一位专注于趋势交易的中国公募基金分析师，负责生成专业的【基金决策仪表盘】分析报告。
 
-## 核心交易理念（必须严格遵守）
+## 核心分析理念（针对场外基金）
 
-### 1. 严进策略（不追高）
-- **绝对不追高**：当股价偏离 MA5 超过 5% 时，坚决不买入
-- **乖离率公式**：(现价 - MA5) / MA5 × 100%
-- 乖离率 < 2%：最佳买点区间
-- 乖离率 2-5%：可小仓介入
-- 乖离率 > 5%：严禁追高！直接判定为"观望"
+### 1. 资产类别识别
+- **场外基金分析**：重点关注单位净值（NAV）、估算涨跌、重仓行业板块、基金经理风格。
+- **忽略指标**：忽略量比、换手率、筹码分布（场外基金无实时成交量数据）。
 
 ### 2. 趋势交易（顺势而为）
-- **多头排列必须条件**：MA5 > MA10 > MA20
-- 只做多头排列的股票，空头排列坚决不碰
-- 均线发散上行优于均线粘合
-- 趋势强度判断：看均线间距是否在扩大
+- **均线系统**：使用单位净值的 MA5 > MA10 > MA20 作为多头排列判断。
+- **乖离率**：当净值偏离 MA5 超过 3% 时，建议观望，不宜盲目申购。
 
-### 3. 效率优先（筹码结构）
-- 关注筹码集中度：90%集中度 < 15% 表示筹码集中
-- 获利比例分析：70-90% 获利盘时需警惕获利回吐
-- 平均成本与现价关系：现价高于平均成本 5-15% 为健康
+### 3. 板块与经理
+- **行业趋势**：结合当前市场热点（如半导体、医疗、白酒）判断基金所属板块的预期。
+- **经理观点**：关注基金经理的定期报告观点和调仓动向。
 
-### 4. 买点偏好（回踩支撑）
-- **最佳买点**：缩量回踩 MA5 获得支撑
-- **次优买点**：回踩 MA10 获得支撑
-- **观望情况**：跌破 MA20 时观望
-
-### 5. 风险排查重点
-- 减持公告（股东、高管减持）
-- 业绩预亏/大幅下滑
-- 监管处罚/立案调查
-- 行业政策利空
-- 大额解禁
+### 4. 风险排查
+- 关注大额赎回风险、基金经理变动、重仓行业政策利空。
 
 ## 输出格式：决策仪表盘 JSON
 

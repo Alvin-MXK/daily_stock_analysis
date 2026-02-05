@@ -416,35 +416,34 @@ class DataFetcherManager:
     
     def prefetch_realtime_quotes(self, stock_codes: List[str]) -> int:
         """
-        批量预取实时行情数据（在分析开始前调用）
+        批量预取实时行情数据
         
-        策略：
-        1. 检查优先级中是否包含全量拉取数据源（efinance/akshare_em）
-        2. 如果不包含，跳过预取（新浪/腾讯是单股票查询，无需预取）
-        3. 如果自选股数量 >= 5 且使用全量数据源，则预取填充缓存
-        
-        这样做的好处：
-        - 使用新浪/腾讯时：每只股票独立查询，无全量拉取问题
-        - 使用 efinance/东财时：预取一次，后续缓存命中
-        
-        Args:
-            stock_codes: 待分析的股票代码列表
-            
-        Returns:
-            预取的股票数量（0 表示跳过预取）
+        针对场外基金优化：
+        1. 如果全是场外基金，使用基金专用批量接口
+        2. 否则使用股票批量接口
         """
         from src.config import get_config
-        
         config = get_config()
         
-        # 如果实时行情被禁用，跳过预取
         if not config.enable_realtime_quote:
-            logger.debug("[预取] 实时行情功能已禁用，跳过预取")
             return 0
         
-        # 检查优先级中是否包含全量拉取数据源
-        # 注意：新增全量接口（如 tushare_realtime）时需同步更新此列表
-        # 全量接口特征：一次 API 调用拉取全市场 5000+ 股票数据
+        # 判断是否全是场外基金
+        is_all_funds = all(c.startswith(('00', '01', '11', '16', '26', '27')) for c in stock_codes)
+        
+        if is_all_funds:
+            logger.info(f"[预取] 检测到全量场外基金，开始批量预取基金估值...")
+            try:
+                for fetcher in self._fetchers:
+                    if fetcher.name == "EfinanceFetcher":
+                        # 触发基金缓存刷新
+                        fetcher.get_realtime_quote(stock_codes[0])
+                        return len(stock_codes)
+            except Exception as e:
+                logger.error(f"[预取] 基金预取异常: {e}")
+            return 0
+
+        # 原有的股票预取逻辑
         priority = config.realtime_source_priority.lower()
         bulk_sources = ['efinance', 'akshare_em', 'tushare']  # 全量接口列表
         
@@ -662,36 +661,48 @@ class DataFetcherManager:
 
     def get_stock_name(self, stock_code: str) -> Optional[str]:
         """
-        获取股票中文名称（自动切换数据源）
+        获取资产（股票/基金）中文名称
         
-        尝试从多个数据源获取股票名称：
-        1. 先从实时行情缓存中获取（如果有）
-        2. 依次尝试各个数据源的 get_stock_name 方法
-        3. 最后尝试让大模型通过搜索获取（需要外部调用）
-        
-        Args:
-            stock_code: 股票代码
-            
-        Returns:
-            股票中文名称，所有数据源都失败则返回 None
+        策略：
+        1. 检查内存缓存
+        2. 尝试从实时行情缓存获取（最快，覆盖全市场）
+        3. 依次尝试各个数据源
         """
         # 1. 先检查缓存
-        if hasattr(self, '_stock_name_cache') and stock_code in self._stock_name_cache:
-            return self._stock_name_cache[stock_code]
-        
-        # 初始化缓存
         if not hasattr(self, '_stock_name_cache'):
             self._stock_name_cache = {}
+            
+        if stock_code in self._stock_name_cache:
+            return self._stock_name_cache[stock_code]
         
-        # 2. 尝试从实时行情中获取（最快）
+        # 2. 尝试从实时行情中获取（efinance 全量拉取后这里会非常快）
         quote = self.get_realtime_quote(stock_code)
         if quote and hasattr(quote, 'name') and quote.name:
             name = quote.name
             self._stock_name_cache[stock_code] = name
-            logger.info(f"[股票名称] 从实时行情获取: {stock_code} -> {name}")
             return name
         
-        # 3. 依次尝试各个数据源
+        # 3. 针对基金的特殊优化：如果实时行情没查到，尝试 efinance 的基金专用接口
+        if stock_code.startswith(('00', '01', '11', '15', '16', '18', '50', '51')):
+            try:
+                import efinance as ef
+                # ef.fund.get_base_info 返回的是 Series 或 DataFrame
+                info = ef.fund.get_base_info(stock_code)
+                if info is not None:
+                    name = None
+                    if isinstance(info, pd.Series):
+                        name = info.get('基金简称') or info.get('Name')
+                    elif isinstance(info, pd.DataFrame) and not info.empty:
+                        name = info.iloc[0].get('基金简称') or info.iloc[0].get('Name')
+                    
+                    if name:
+                        self._stock_name_cache[stock_code] = name
+                        logger.info(f"[基金名称] 从 efinance 基金接口获取: {stock_code} -> {name}")
+                        return name
+            except Exception as e:
+                logger.debug(f"从 efinance 基金接口获取名称失败: {e}")
+
+        # 4. 依次尝试各个数据源的通用方法
         for fetcher in self._fetchers:
             if hasattr(fetcher, 'get_stock_name'):
                 try:
