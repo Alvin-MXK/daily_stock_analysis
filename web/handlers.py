@@ -99,6 +99,24 @@ class HtmlResponse(Response):
 # 页面处理器
 # ============================================================
 
+def fetch_realtime_fund_gz(code: str) -> Optional[Dict[str, Any]]:
+    """从天天基金接口获取实时估值"""
+    import requests
+    import re
+    url = f"https://fundgz.1234567.com.cn/js/{code}.js"
+    try:
+        # 模拟浏览器请求
+        headers = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+        resp = requests.get(url, headers=headers, timeout=3)
+        if resp.status_code == 200:
+            match = re.search(r'jsonpgz\((.*)\);', resp.text)
+            if match:
+                return json.loads(match.group(1))
+    except:
+        pass
+    return None
+
+
 class PageHandler:
     """页面请求处理器"""
     
@@ -121,49 +139,42 @@ class PageHandler:
         
         # 获取基金名称映射
         from src.analyzer import ASSET_NAME_MAP
-        import efinance as ef
         
-        # 优化：批量获取实时行情/估值，避免循环请求
-        realtime_data = {}
-        try:
-            # 使用基金实时估值接口，一次性获取列表中的所有基金
-            rt_df = ef.fund.get_realtime_increase_rate(codes)
-            if rt_df is not None and not rt_df.empty:
-                for _, row in rt_df.iterrows():
-                    f_code = row['基金代码']
-                    f_yield = row.get('估算涨跌幅')
-                    if f_yield is not None and f_yield != '--':
-                        realtime_data[f_code] = f"{float(f_yield):+.2f}%"
-        except Exception as e:
-            logger.debug(f"批量获取实时收益率失败: {e}")
+        # 并发获取实时估值数据
+        import concurrent.futures
+        realtime_results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_code = {executor.submit(fetch_realtime_fund_gz, code): code for code in codes}
+            for future in concurrent.futures.as_completed(future_to_code):
+                code = future_to_code[future]
+                try:
+                    data = future.result()
+                    if data:
+                        realtime_results[code] = data
+                except:
+                    pass
 
         funds_data = []
         for code in codes:
             analysis = latest_analyses.get(code, {})
+            gz_data = realtime_results.get(code, {})
             
-            # 优先使用批量获取的实时收益率，如果没有则显示 -
-            prev_yield = realtime_data.get(code, "-")
+            # 提取实时数据
+            realtime_yield = gz_data.get('gszzl', '-')
+            if realtime_yield != '-':
+                realtime_yield = f"{float(realtime_yield):+.2f}%"
             
-            # 如果实时估值没拿到（可能非交易时间），尝试从数据库拿最后一次收盘收益率
-            if prev_yield == "-":
-                try:
-                    from src.storage import get_db
-                    db = get_db()
-                    latest_daily = db.get_latest_data(code, days=1)
-                    if latest_daily:
-                        pct = latest_daily[0].pct_chg
-                        if pct is not None:
-                            prev_yield = f"{float(pct):+.2f}%"
-                except:
-                    pass
-
             funds_data.append({
                 "code": code,
-                "name": ASSET_NAME_MAP.get(code, analysis.get("name", f"基金{code}")),
+                "name": ASSET_NAME_MAP.get(code, gz_data.get("name", analysis.get("name", f"基金{code}"))),
                 "latest_analysis": analysis,
-                "prev_yield": prev_yield
+                "realtime_yield": realtime_yield,
+                "prev_close": gz_data.get('dwjz', '-'),
+                "current_price": gz_data.get('gsz', '-'),
+                "refresh_time": gz_data.get('gztime', '-')
             })
             
+        from web.templates import render_fund_list_page
         body = render_fund_list_page(funds_data, config.schedule_time)
         return HtmlResponse(body)
 
@@ -186,7 +197,7 @@ class PageHandler:
             no_context_snapshot=False
         )
         
-        thread = threading.Thread(target=run_full_analysis, args=(config, args))
+        thread = threading.Thread(target=run_full_analysis, args=(config, args, None, True))
         thread.start()
         
         return self.handle_index()
@@ -201,13 +212,21 @@ class PageHandler:
         history = analysis_service.get_analysis_history(code=code, success=True, limit=1)
         latest_analysis = history[0] if history else None
         
+        # 获取实时估值
+        gz_data = fetch_realtime_fund_gz(code) or {}
+        
         from src.analyzer import ASSET_NAME_MAP
-        name = ASSET_NAME_MAP.get(code, latest_analysis.get("name", f"基金{code}") if latest_analysis else f"基金{code}")
+        name = ASSET_NAME_MAP.get(code, gz_data.get("name", latest_analysis.get("name", f"基金{code}") if latest_analysis else f"基金{code}"))
         
         fund_info = {}
         performance = {}
-        holdings = []
-        realtime_valuation = {"value": "-", "source": "N/A", "time": "-"}
+        realtime_valuation = {
+            "value": f"{float(gz_data.get('gszzl', 0)):+.2f}%" if gz_data.get('gszzl') else "-",
+            "price": gz_data.get('gsz', '-'),
+            "prev_close": gz_data.get('dwjz', '-'),
+            "source": "天天基金实时估算",
+            "time": gz_data.get('gztime', '-')
+        }
         
         try:
             import efinance as ef
@@ -223,61 +242,9 @@ class PageHandler:
             if perf_df is not None and not perf_df.empty:
                 for _, row in perf_df.iterrows():
                     performance[row['时间段']] = f"{row['收益率']:+.2f}%" if row['收益率'] != '--' else "-"
-            
-            # 3. 实时估值 (官方接口)
-            try:
-                rt_val_df = ef.fund.get_realtime_increase_rate(code)
-                if rt_val_df is not None and not rt_val_df.empty:
-                    row = rt_val_df.iloc[0]
-                    val = row.get('估算涨跌幅')
-                    if val is not None and val != '--':
-                        realtime_valuation["value"] = f"{float(val):+.2f}%"
-                        realtime_valuation["source"] = "官方实时估算"
-                        realtime_valuation["time"] = row.get('估算时间', '-')
-            except: pass
-
-            # 4. 持仓明细
-            try:
-                pos_df = ef.fund.get_invest_position(code)
-                if pos_df is not None and not pos_df.empty:
-                    latest_date = pos_df['截止日期'].max()
-                    current_pos = pos_df[pos_df['截止日期'] == latest_date].head(10)
-                    for _, row in current_pos.iterrows():
-                        holdings.append({
-                            "name": row.get('股票名称', row.get('债券名称', '-')),
-                            "code": row.get('股票代码', row.get('债券代码', '-')),
-                            "ratio": f"{row.get('持仓比例', 0):.2f}%"
-                        })
-                    
-                    # 模拟估值逻辑 (如果官方失效)
-                    if realtime_valuation["value"] == "-":
-                        sim_yield = 0.0
-                        total_ratio = 0.0
-                        stock_codes = [h['code'] for h in holdings if h['code'].isdigit() and len(h['code']) == 6]
-                        if stock_codes:
-                            stocks_rt = ef.stock.get_realtime_quotes(stock_codes)
-                            if stocks_rt is not None and not stocks_rt.empty:
-                                for h in holdings:
-                                    s_row = stocks_rt[stocks_rt['股票代码'] == h['code']]
-                                    if not s_row.empty:
-                                        chg = s_row.iloc[0].get('涨跌幅', 0)
-                                        ratio = float(h['ratio'].replace('%', ''))
-                                        sim_yield += (float(chg) * ratio / 100)
-                                        total_ratio += ratio
-                                if total_ratio > 0:
-                                    realtime_valuation["value"] = f"{sim_yield:+.2f}%"
-                                    realtime_valuation["source"] = f"基于重仓股({latest_date})模拟"
-                                    realtime_valuation["time"] = datetime.now().strftime('%H:%M:%S')
-            except: pass
-
-            hist_df = ef.fund.get_quote_history(code)
-            if hist_df is not None and not hist_df.empty:
-                latest_change = hist_df.iloc[0].get('涨跌幅')
-                if latest_change is not None and latest_change != '--':
-                    fund_info['前日收益率'] = f"{float(latest_change):+.2f}%"
         except: pass
             
-        body = render_fund_detail_page(code, name, fund_info, performance, holdings, realtime_valuation, latest_analysis)
+        body = render_fund_detail_page(code, name, fund_info, performance, realtime_valuation, latest_analysis)
         return HtmlResponse(body)
 
     def handle_config(self) -> Response:
@@ -323,6 +290,73 @@ class PageHandler:
         msg = "配置已成功更新！注意：新配置将在下一次全量分析任务启动时正式生效。"
         body = render_config_page(updates["STOCK_LIST"], env_filename, message=msg)
         return HtmlResponse(body)
+
+    def handle_send_email_report(self, form_data: Dict[str, list]) -> Response:
+        """手动发送邮件报告 POST /email/send_report"""
+        try:
+            from src.config import get_config
+            from src.notification import NotificationService
+            from src.storage import get_db, AnalysisHistory
+            from sqlalchemy import select, desc, and_
+            from src.analyzer import AnalysisResult
+            import json
+            
+            config = get_config()
+            db = get_db()
+            notifier = NotificationService()
+            
+            # 获取所有自选股
+            codes = [c.strip() for c in config.stock_list]
+            if not codes:
+                return JsonResponse({"success": False, "error": "未配置自选股列表"})
+            
+            # 获取每只股票最新的成功分析结果
+            results = []
+            with db.get_session() as session:
+                for code in codes:
+                    record = session.execute(
+                        select(AnalysisHistory)
+                        .where(and_(AnalysisHistory.code == code, AnalysisHistory.success == True))
+                        .order_by(desc(AnalysisHistory.created_at))
+                        .limit(1)
+                    ).scalar_one_or_none()
+                    
+                    if record:
+                        # 将数据库记录转换为 AnalysisResult 对象
+                        # 注意：这里只需要部分关键字段用于生成报告
+                        res = AnalysisResult(
+                            code=record.code,
+                            name=record.name,
+                            sentiment_score=record.sentiment_score,
+                            trend_prediction=record.trend_prediction,
+                            operation_advice=record.operation_advice,
+                            analysis_summary=record.analysis_summary
+                        )
+                        # 尝试解析 dashboard 数据
+                        if record.raw_result:
+                            try:
+                                raw_data = json.loads(record.raw_result)
+                                if 'dashboard' in raw_data:
+                                    res.dashboard = raw_data['dashboard']
+                            except:
+                                pass
+                        results.append(res)
+            
+            if not results:
+                return JsonResponse({"success": False, "error": "暂无分析结果，请先执行分析"})
+            
+            # 生成报告并发送
+            report = notifier.generate_dashboard_report(results)
+            success = notifier.send_to_email(report)
+            
+            if success:
+                return JsonResponse({"success": True})
+            else:
+                return JsonResponse({"success": False, "error": "邮件发送失败，请检查配置或日志"})
+                
+        except Exception as e:
+            logger.error(f"手动发送邮件失败: {e}")
+            return JsonResponse({"success": False, "error": str(e)})
 
     def handle_history(self, query: Dict[str, list]) -> Response:
         """处理历史记录页面 GET /history"""

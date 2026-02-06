@@ -220,7 +220,8 @@ def parse_arguments() -> argparse.Namespace:
 def run_full_analysis(
     config: Config,
     args: argparse.Namespace,
-    stock_codes: Optional[List[str]] = None
+    stock_codes: Optional[List[str]] = None,
+    skip_email: bool = True
 ):
     """
     执行完整的分析流程（个股 + 大盘复盘）
@@ -249,7 +250,8 @@ def run_full_analysis(
         results = pipeline.run(
             stock_codes=stock_codes,
             dry_run=args.dry_run,
-            send_notification=not args.no_notify
+            send_notification=not args.no_notify,
+            skip_email=skip_email
         )
 
         # Issue #128: 分析间隔 - 在个股分析和大盘分析之间添加延迟
@@ -453,7 +455,7 @@ def main() -> int:
             from src.scheduler import run_with_schedule
             
             def scheduled_task():
-                run_full_analysis(config, args, stock_codes)
+                run_full_analysis(config, args, stock_codes, skip_email=True)
             
             run_with_schedule(
                 task=scheduled_task,
@@ -463,7 +465,7 @@ def main() -> int:
             return 0
         
         # 模式3: 正常单次运行
-        run_full_analysis(config, args, stock_codes)
+        run_full_analysis(config, args, stock_codes, skip_email=True)
         
         logger.info("\n程序执行完成")
         

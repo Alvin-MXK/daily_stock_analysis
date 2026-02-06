@@ -127,6 +127,7 @@ def create_default_router() -> Router:
     router.register("/market_review/run", "GET", lambda q: page_handler.handle_run_market_review(), "执行综合分析")
     router.register("/config", "GET", lambda q: page_handler.handle_config(), "配置管理")
     router.register("/update", "POST", lambda f: page_handler.handle_update(f), "更新配置")
+    router.register("/email/send_report", "POST", lambda f: page_handler.handle_send_email_report(f), "手动发送邮件报告")
     router.register("/system/status", "GET", lambda q: page_handler.handle_system_status_page(), "系统状态")
     
     router.register("/health", "GET", lambda q: api_handler.handle_health(), "API: 健康检查")

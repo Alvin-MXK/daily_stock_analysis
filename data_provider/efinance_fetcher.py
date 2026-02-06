@@ -492,6 +492,10 @@ class EfinanceFetcher(BaseFetcher):
             
             if is_fund:
                 # 场外基金字段映射
+                realtime_yield = row.get('估算涨跌幅')
+                if realtime_yield is not None:
+                    realtime_yield = f"{float(realtime_yield):+.2f}%"
+                
                 quote = UnifiedRealtimeQuote(
                     code=stock_code,
                     name=str(row.get('基金名称', '')),
@@ -505,7 +509,8 @@ class EfinanceFetcher(BaseFetcher):
                     volume_ratio=0.0, 
                     pe_ratio=0.0,
                     total_mv=0.0,
-                    circ_mv=0.0
+                    circ_mv=0.0,
+                    realtime_yield=realtime_yield
                 )
             else:
                 # 股票/ETF 字段映射

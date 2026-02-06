@@ -348,9 +348,26 @@ class StockAnalysisPipeline:
         if realtime_quote:
             # 使用 getattr 安全获取字段，缺失字段返回 None 或默认值
             volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
+            
+            # 针对基金尝试获取实时收益
+            # 1. 优先从 UnifiedRealtimeQuote.realtime_yield 获取（efinance 提供）
+            # 2. 备选：从 web/handlers.py 逻辑中获取（如果是在 WebUI 触发的流程）
+            realtime_yield = getattr(realtime_quote, 'realtime_yield', None)
+            
+            # 如果是场外基金且没有 realtime_yield，尝试通过天天基金 API 获取
+            if not realtime_yield and enhanced.get('code', '').startswith(('00', '01', '11', '16', '26', '27')):
+                try:
+                    from web.handlers import fetch_realtime_fund_gz
+                    gz_data = fetch_realtime_fund_gz(enhanced['code'])
+                    if gz_data and 'gszzl' in gz_data:
+                        realtime_yield = f"{float(gz_data['gszzl']):+.2f}%"
+                except Exception as e:
+                    logger.debug(f"通过天天基金获取实时收益失败: {e}")
+
             enhanced['realtime'] = {
                 'name': getattr(realtime_quote, 'name', ''),
                 'price': getattr(realtime_quote, 'price', None),
+                'realtime_yield': realtime_yield,
                 'volume_ratio': volume_ratio,
                 'volume_ratio_desc': self._describe_volume_ratio(volume_ratio) if volume_ratio else '无数据',
                 'turnover_rate': getattr(realtime_quote, 'turnover_rate', None),
@@ -574,7 +591,8 @@ class StockAnalysisPipeline:
         self, 
         stock_codes: Optional[List[str]] = None,
         dry_run: bool = False,
-        send_notification: bool = True
+        send_notification: bool = True,
+        skip_email: bool = False
     ) -> List[AnalysisResult]:
         """
         运行完整的分析流程
@@ -589,6 +607,7 @@ class StockAnalysisPipeline:
             stock_codes: 股票代码列表（可选，默认使用配置中的自选股）
             dry_run: 是否仅获取数据不分析
             send_notification: 是否发送推送通知
+            skip_email: 是否跳过邮件推送
             
         Returns:
             分析结果列表
@@ -679,13 +698,13 @@ class StockAnalysisPipeline:
             if single_stock_notify:
                 # 单股推送模式：只保存汇总报告，不再重复推送
                 logger.info("单股推送模式：跳过汇总推送，仅保存报告到本地")
-                self._send_notifications(results, skip_push=True)
+                self._send_notifications(results, skip_push=True, skip_email=skip_email)
             else:
-                self._send_notifications(results)
+                self._send_notifications(results, skip_email=skip_email)
         
         return results
     
-    def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False) -> None:
+    def _send_notifications(self, results: List[AnalysisResult], skip_push: bool = False, skip_email: bool = False) -> None:
         """
         发送分析结果通知
         
@@ -694,6 +713,7 @@ class StockAnalysisPipeline:
         Args:
             results: 分析结果列表
             skip_push: 是否跳过推送（仅保存到本地，用于单股推送模式）
+            skip_email: 是否跳过邮件推送
         """
         try:
             logger.info("生成决策仪表盘日报...")
@@ -726,6 +746,9 @@ class StockAnalysisPipeline:
                 non_wechat_success = False
                 for channel in channels:
                     if channel == NotificationChannel.WECHAT:
+                        continue
+                    if channel == NotificationChannel.EMAIL and skip_email:
+                        logger.info("已设置跳过邮件推送")
                         continue
                     if channel == NotificationChannel.FEISHU:
                         non_wechat_success = self.notifier.send_to_feishu(report) or non_wechat_success

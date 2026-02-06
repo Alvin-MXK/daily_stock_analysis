@@ -78,7 +78,7 @@ body {
 
 .navbar-nav {
     display: flex;
-    gap: 0.5rem;
+    gap: 1rem;
     list-style: none;
     margin: 0;
     padding: 0;
@@ -91,7 +91,7 @@ body {
     font-size: 0.85rem;
     font-weight: 500;
     transition: all 0.2s;
-    padding: 0.5rem 0.75rem;
+    padding: 0.4rem 0.6rem;
     border-radius: 0.375rem;
     white-space: nowrap;
 }
@@ -348,22 +348,6 @@ textarea, input[type="text"], input[type="password"] { width: 100%; padding: 0.7
     transform: translateX(-50%) translateY(0);
     opacity: 1;
 }
-
-/* Spinner */
-.spinner {
-    display: inline-block;
-    width: 14px;
-    height: 14px;
-    border: 2px solid currentColor;
-    border-right-color: transparent;
-    border-radius: 50%;
-    animation: spin 0.75s linear infinite;
-    vertical-align: middle;
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
 """
 
 
@@ -388,7 +372,7 @@ def render_dashboard_html(raw_result: str | Dict[str, Any]) -> str:
         pp = dp.get('price_position', {})
         intel = db.get('intelligence', {})
         risks = "".join([f"<li>{html.escape(r)}</li>" for r in intel.get('risk_alerts', [])])
-        positives = "".join([f"<li>{html.escape(p)}</li>" for p in intel.get('positive_catalysts', [])])
+        positives = "".join([f"<li>{html.escape(p)}</li>" for r in intel.get('positive_catalysts', [])])
         bp = db.get('battle_plan', {})
         sp = bp.get('sniper_points', {})
         cl = "".join([f"<li class='check-item'>{html.escape(i)}</li>" for i in bp.get('action_checklist', [])])
@@ -523,24 +507,22 @@ def render_fund_list_page(
     for fund in funds_data:
         code, name = fund['code'], fund['name']
         analysis = fund.get('latest_analysis') or {}
-        advice, score, trend, time_str = analysis.get('operation_advice', '-'), analysis.get('sentiment_score', '-'), analysis.get('trend_prediction', '-'), analysis.get('created_at', '-')
-        if time_str != '-':
-            try: time_str = datetime.fromisoformat(time_str).strftime('%m-%d %H:%M')
-            except: pass
+        advice, score, trend = analysis.get('operation_advice', '-'), analysis.get('sentiment_score', '-'), analysis.get('trend_prediction', '-')
+        
         advice_class = "badge-info"
         if '买' in advice or '加仓' in advice: advice_class = "badge-success"
         elif '卖' in advice or '减仓' in advice: advice_class = "badge-error"
         elif '持有' in advice: advice_class = "badge-warning"
         
-        prev_yield = fund.get('prev_yield', '-')
+        realtime_yield = fund.get('realtime_yield', '-')
         yield_style = ""
-        if '+' in prev_yield: yield_style = "color: #ef4444; font-weight: bold;"
-        elif '-' in prev_yield: yield_style = "color: #10b981; font-weight: bold;"
+        if '+' in realtime_yield: yield_style = "color: #ef4444; font-weight: bold;"
+        elif '-' in realtime_yield: yield_style = "color: #10b981; font-weight: bold;"
 
-        rows.append(f'<tr data-code="{code}" data-name="{name}"><td><code class="code-badge">{code}</code></td><td><a href="/fund/detail?code={code}" style="color: var(--primary); text-decoration: none; font-weight: 600;">{name}</a></td><td><span style="{yield_style}">{prev_yield}</span></td><td><span class="badge {advice_class}">{advice}</span></td><td><strong>{score}</strong></td><td>{trend}</td><td class="text-muted">{time_str}</td></tr>')
+        rows.append(f'<tr data-code="{code}" data-name="{name}"><td><code class="code-badge">{code}</code></td><td><a href="/fund/detail?code={code}" style="color: var(--primary); text-decoration: none; font-weight: 600;">{name}</a></td><td><span style="{yield_style}">{realtime_yield}</span></td><td style="font-weight: 600;">{fund.get("prev_close", "-")}</td><td style="font-weight: 600; {yield_style}">{fund.get("current_price", "-")}</td><td><span class="badge {advice_class}">{advice}</span></td><td><strong>{score}</strong></td><td class="text-muted" style="font-size: 0.75rem;">{fund.get("refresh_time", "-")}</td></tr>')
     
     content = f"""
-  <div class="container" style="max-width: 1100px;">
+  <div class="container" style="max-width: 1200px;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
         <h2>📋 场外基金概览</h2>
         <button type="button" class="btn btn-success" onclick="confirmAllAnalysis()">🚀 全量分析</button>
@@ -548,7 +530,7 @@ def render_fund_list_page(
     <p class="subtitle">管理当前配置的 {len(funds_data)} 只场外基金及其最新分析状态</p>
     
     <input type="text" id="fund_search" class="search-box" placeholder="搜索基金名称或代码..." onkeyup="filterFunds()">
-    <div style="overflow-x: auto;"><table class="data-table" id="fund_table"><thead><tr><th onclick="sortTable(0)">代码 <span class="sort-icon"></span></th><th onclick="sortTable(1)">基金名称 <span class="sort-icon"></span></th><th onclick="sortTable(2)">前日收益 <span class="sort-icon"></span></th><th onclick="sortTable(3)">最新建议 <span class="sort-icon"></span></th><th onclick="sortTable(4)">评分 <span class="sort-icon"></span></th><th onclick="sortTable(5)">趋势 <span class="sort-icon"></span></th><th onclick="sortTable(6)">分析时间 <span class="sort-icon"></span></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
+    <div style="overflow-x: auto;"><table class="data-table" id="fund_table"><thead><tr><th onclick="sortTable(0)">代码 <span class="sort-icon"></span></th><th onclick="sortTable(1)">基金名称 <span class="sort-icon"></span></th><th onclick="sortTable(2)">实时收益 <span class="sort-icon"></span></th><th onclick="sortTable(3)">前日收盘 <span class="sort-icon"></span></th><th onclick="sortTable(4)">当前估值 <span class="sort-icon"></span></th><th onclick="sortTable(5)">最新建议 <span class="sort-icon"></span></th><th onclick="sortTable(6)">评分 <span class="sort-icon"></span></th><th onclick="sortTable(7)">刷新时间 <span class="sort-icon"></span></th></tr></thead><tbody>{"".join(rows)}</tbody></table></div>
   </div>
   <script>
     function confirmAllAnalysis() {{
@@ -562,7 +544,29 @@ def render_fund_list_page(
         }}
     }}
     function filterFunds() {{ const input = document.getElementById('fund_search'); const filter = input.value.toUpperCase(); const table = document.getElementById('fund_table'); const tr = table.getElementsByTagName('tr'); for (let i = 1; i < tr.length; i++) {{ const code = tr[i].getAttribute('data-code') || ''; const name = tr[i].getAttribute('data-name') || ''; tr[i].style.display = (code.toUpperCase().indexOf(filter) > -1 || name.toUpperCase().indexOf(filter) > -1) ? "" : "none"; }} }}
-    function sortTable(n) {{ const table = document.getElementById("fund_table"); let dir = "asc", switching = true, switchcount = 0; const headers = table.getElementsByTagName("th"); for (let i = 0; i < headers.length; i++) headers[i].classList.remove("sort-asc", "sort-desc"); while (switching) {{ switching = false; const rows = table.rows; for (let i = 1; i < (rows.length - 1); i++) {{ let shouldSwitch = false; let x = rows[i].getElementsByTagName("TD")[n].textContent; let y = rows[i+1].getElementsByTagName("TD")[n].textContent; if (n === 4) {{ x = parseFloat(x) || 0; y = parseFloat(y) || 0; }} if (dir == "asc" ? x > y : x < y) {{ shouldSwitch = true; break; }} }} if (shouldSwitch) {{ rows[i].parentNode.insertBefore(rows[i + 1], rows[i]); switching = true; switchcount++; }} else if (switchcount == 0 && dir == "asc") {{ dir = "desc"; switching = true; }} }} headers[n].classList.add(dir == "asc" ? "sort-asc" : "sort-desc"); }}
+    function sortTable(n) {{ 
+        const table = document.getElementById("fund_table"); 
+        let dir = "asc", switching = true, switchcount = 0; 
+        const headers = table.getElementsByTagName("th"); 
+        for (let i = 0; i < headers.length; i++) headers[i].classList.remove("sort-asc", "sort-desc"); 
+        while (switching) {{ 
+            switching = false; 
+            const rows = table.rows; 
+            for (let i = 1; i < (rows.length - 1); i++) {{ 
+                let shouldSwitch = false; 
+                let x = rows[i].getElementsByTagName("TD")[n].textContent; 
+                let y = rows[i+1].getElementsByTagName("TD")[n].textContent; 
+                if ([2, 3, 4, 6].includes(n)) {{ 
+                    x = parseFloat(x.replace('%', '')) || 0; 
+                    y = parseFloat(y.replace('%', '')) || 0; 
+                }} 
+                if (dir == "asc" ? x > y : x < y) {{ shouldSwitch = true; break; }} 
+            }} 
+            if (shouldSwitch) {{ rows[i].parentNode.insertBefore(rows[i + 1], rows[i]); switching = true; switchcount++; }} 
+            else if (switchcount == 0 && dir == "asc") {{ dir = "desc"; switching = true; }} 
+        }} 
+        headers[n].classList.add(dir == "asc" ? "sort-asc" : "sort-desc"); 
+    }}
   </script>
 """
     return render_base("基金概览 | WebUI", content, active_nav="overview").encode("utf-8")
@@ -573,7 +577,6 @@ def render_fund_detail_page(
     name: str,
     fund_info: Dict[str, Any],
     performance: Dict[str, str],
-    holdings: List[Dict[str, str]],
     realtime_valuation: Dict[str, str],
     latest_analysis: Optional[Dict[str, Any]] = None
 ) -> bytes:
@@ -592,23 +595,20 @@ def render_fund_detail_page(
             <div style="font-size: 0.85rem; color: var(--text-light); margin-bottom: 0.25rem;">实时估算收益率</div>
             <div style="font-size: 1.8rem; font-weight: 800; {val_style}">{val_val}</div>
         </div>
+        <div style="text-align: center; flex: 1; display: flex; justify-content: center; gap: 2rem;">
+            <div>
+                <div style="font-size: 0.75rem; color: var(--text-light);">前日收盘价</div>
+                <div style="font-size: 1.1rem; font-weight: 600;">{realtime_valuation.get('prev_close', '-')}</div>
+            </div>
+            <div>
+                <div style="font-size: 0.75rem; color: var(--text-light);">当前实时价</div>
+                <div style="font-size: 1.1rem; font-weight: 600; {val_style}">{realtime_valuation.get('price', '-')}</div>
+            </div>
+        </div>
         <div style="text-align: right;">
             <div class="badge badge-info" style="margin-bottom: 0.4rem;">{realtime_valuation.get('source', '-')}</div>
             <div style="font-size: 0.75rem; color: var(--text-light);">更新时间: {realtime_valuation.get('time', '-')}</div>
         </div>
-    </div>
-    """
-
-    # 持仓明细 HTML
-    holding_rows = "".join([f'<tr><td>{h["name"]}</td><td><code class="code-badge">{h["code"]}</code></td><td style="text-align: right; font-weight: 600;">{h["ratio"]}</td></tr>' for h in holdings])
-    holdings_html = f"""
-    <div style="background: #fff; border: 1px solid var(--border); padding: 1.5rem; border-radius: 1rem; margin-bottom: 1.5rem;">
-        <h3 style="margin-top: 0; font-size: 1.1rem; margin-bottom: 1rem;">📦 前十大重仓持仓</h3>
-        <table class="mini-table">
-            <thead><tr><th>资产名称</th><th>代码</th><th style="text-align: right;">持仓比例</th></tr></thead>
-            <tbody>{holding_rows or '<tr><td colspan="3" style="text-align: center;">暂无持仓数据</td></tr>'}</tbody>
-        </table>
-        <p class="text-muted" style="margin-top: 0.75rem; font-size: 0.7rem;">注：持仓数据来源于基金季度报告，具有一定的滞后性。</p>
     </div>
     """
 
@@ -648,10 +648,11 @@ def render_fund_detail_page(
     content = f"""
   <div class="container" style="max-width: 1000px;">
     <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 1.5rem;"><div><h2 style="margin-bottom: 0.5rem;">{name}</h2><code class="code-badge" style="font-size: 1rem;">{code}</code></div><a href="/history?code={code}" class="btn btn-outline">查看全部历史记录 →</a></div>
-    <div style="display: grid; grid-template-columns: 320px 1fr; gap: 2rem;"><div style="display: flex; flex-direction: column; gap: 1.5rem;"><div style="background: #f8fafc; padding: 1.5rem; border-radius: 1rem; border: 1px solid var(--border);"><h3 style="margin-top: 0; font-size: 1.1rem; margin-bottom: 1rem;">📋 基金档案</h3><div style="font-size: 0.85rem;">{info_html or '<div class="task-hint">暂无数据</div>'}</div></div><div style="background: #f8fafc; padding: 1.5rem; border-radius: 1rem; border: 1px solid var(--border);"><h3 style="margin-top: 0; font-size: 1.1rem; margin-bottom: 1rem;">📈 阶段收益</h3><div class="perf-grid">{"".join(perf_items)}</div></div></div><div>{valuation_html}{holdings_html}{analysis_html}</div></div>
+    <div style="display: grid; grid-template-columns: 320px 1fr; gap: 2rem;"><div style="display: flex; flex-direction: column; gap: 1.5rem;"><div style="background: #f8fafc; padding: 1.5rem; border-radius: 1rem; border: 1px solid var(--border);"><h3 style="margin-top: 0; font-size: 1.1rem; margin-bottom: 1rem;">📋 基金档案</h3><div style="font-size: 0.85rem;">{info_html or '<div class="task-hint">暂无数据</div>'}</div></div><div style="background: #f8fafc; padding: 1.5rem; border-radius: 1rem; border: 1px solid var(--border);"><h3 style="margin-top: 0; font-size: 1.1rem; margin-bottom: 1rem;">📈 阶段收益</h3><div class="perf-grid">{"".join(perf_items)}</div></div></div><div>{valuation_html}{analysis_html}</div></div>
     <div class="footer"><a href="/" style="color: var(--primary); text-decoration: none;">← 返回基金概览</a></div>
   </div>
 """
+    return render_base(f"{name} 详情 | WebUI", content, active_nav="overview").encode("utf-8")
     return render_base(f"{name} 详情 | WebUI", content, active_nav="overview").encode("utf-8")
 
 
@@ -805,10 +806,40 @@ def render_config_page(
       <div class="report-section" style="margin-top: 0; border-top: none; padding-top: 0;"><div class="report-section-title">📋 基金持仓配置</div><div class="form-group"><label for="stock_list">我的场外基金列表</label><textarea id="stock_list" name="stock_list" rows="5" placeholder="输入 6 位基金代码，逗号分隔">{html.escape(stock_list)}</textarea></div></div>
       <div class="report-section"><div class="report-section-title">⏰ 自动化与通知</div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;"><div class="form-group"><label for="schedule_time">定时触发时间</label><input type="text" id="schedule_time" name="schedule_time" value="{config.schedule_time}" placeholder="HH:MM (留空则禁用自动触发)"></div><div class="form-group"><label for="email_sender">发件人邮箱</label><input type="text" id="email_sender" name="email_sender" value="{config.email_sender or ''}" placeholder="example@qq.com"></div></div><div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;"><div class="form-group"><label for="email_password">邮箱授权码</label><input type="password" id="email_password" name="email_password" value="{email_pass}" placeholder="SMTP 授权码"></div><div class="form-group"><label for="email_receivers">收件人列表</label><input type="text" id="email_receivers" name="email_receivers" value="{','.join(config.email_receivers)}" placeholder="多个邮箱用逗号分隔"></div></div></div>
       <div class="report-section"><div class="report-section-title">🔑 AI 核心密钥</div><div class="form-group"><label for="gemini_key">Gemini API Key</label><input type="password" id="gemini_key" name="gemini_key" value="{gemini_key}" placeholder="AI 分析核心密钥"></div></div>
-      <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border);"><button type="submit" class="btn btn-success" style="width: 100%; height: 3.5rem; font-size: 1.1rem;">💾 保存并应用所有配置</button></div>
+      <div style="margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); display: flex; gap: 1rem;">
+        <button type="submit" class="btn btn-success" style="flex: 1; height: 3.5rem; font-size: 1.1rem;">💾 保存并应用所有配置</button>
+        <button type="button" class="btn btn-outline" onclick="sendEmailReport()" style="height: 3.5rem; padding: 0 1.5rem;">📧 发送报告到邮箱</button>
+      </div>
     </form>
     <div class="footer"><p>当前环境文件: <code>{html.escape(env_filename)}</code></p></div>
   </div>
+  <script>
+    function sendEmailReport() {{
+        if (confirm("确定要立即发送最新的分析报告到配置的邮箱吗？")) {{
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = "⌛ 正在发送...";
+            
+            fetch('/email/send_report', {{ method: 'POST' }})
+                .then(response => response.json())
+                .then(data => {{
+                    if (data.success) {{
+                        alert("✅ 报告已成功发送到邮箱！");
+                    }} else {{
+                        alert("❌ 发送失败: " + data.error);
+                    }}
+                }})
+                .catch(error => {{
+                    alert("❌ 网络请求失败: " + error);
+                }})
+                .finally(() => {{
+                    btn.disabled = false;
+                    btn.innerHTML = originalText;
+                }});
+        }}
+    }}
+  </script>
   {render_toast(message) if message else ""}
 """
     return render_base("配置管理 | WebUI", content, active_nav="config").encode("utf-8")

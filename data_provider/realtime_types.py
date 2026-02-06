@@ -145,6 +145,9 @@ class UnifiedRealtimeQuote:
     high_52w: Optional[float] = None        # 52周最高
     low_52w: Optional[float] = None         # 52周最低
     
+    # === 基金专用（实时估算）===
+    realtime_yield: Optional[str] = None    # 实时估算收益率（字符串格式，如 "+1.23%"）
+    
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典（过滤 None 值）"""
         result = {
@@ -158,7 +161,7 @@ class UnifiedRealtimeQuote:
             'volume_ratio', 'turnover_rate', 'amplitude',
             'open_price', 'high', 'low', 'pre_close',
             'pe_ratio', 'pb_ratio', 'total_mv', 'circ_mv',
-            'change_60d', 'high_52w', 'low_52w'
+            'change_60d', 'high_52w', 'low_52w', 'realtime_yield'
         ]
         for f in optional_fields:
             val = getattr(self, f, None)
